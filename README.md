@@ -106,7 +106,7 @@ Every tool returned by `tools/list` includes Aura rate-limit metadata in `_meta.
 
 Tools also include `_meta.aura_batching_recommendations`. Agents should batch where the API supports it: attach known follow-up limit orders to `MarketTrade.limit_orders`, place multiple orders in one limit-order request, and use multi-entry `SnipeUpdate.updates`, `CtUpdate.updates`, and `ConfigPubkeys.pubkeys` payloads.
 
-Raw tools also include `_meta.aura_raw_request` with accepted argument forms and copy-ready examples for common trading and utility requests. Tools with state-derived arguments include `_meta.aura_argument_notes`; for example, snipe/copy-trade `id` fields must come from the matching list tool, and `prepare_add_wallet.keypair_base58` must be a full base58-encoded Solana keypair secret, not a public wallet address.
+Raw tools also include `_meta.aura_raw_request` with accepted argument forms and copy-ready examples for common trading and utility requests. Their schemas keep a top-level `type: "object"` so OpenAI/Codex function adapters can register them. Tools with state-derived arguments include `_meta.aura_argument_notes`; for example, snipe/copy-trade `id` fields must come from the matching list tool, and `prepare_add_wallet.keypair_base58` must be a full base58-encoded Solana keypair secret, not a public wallet address.
 
 ## Trading Wallet Requirements
 

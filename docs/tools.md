@@ -29,7 +29,7 @@ When `read_only = true`, mutation tools return an error and do not call Aura. Co
 Raw prepare tools accept a `request` object matching the corresponding Rust client request type from `aura_api_client`. They also accept `request` as a JSON-encoded string for tool adapters that cannot send object-valued raw payloads. The same raw request object can be passed directly, but wrapped `request` payloads are preferred because they are unambiguous.
 For MCP JSON, provide Solana `Address` values as base58 strings; the server converts them to the typed client values before calling Aura.
 
-Every raw tool schema includes both object and JSON-string forms, and every raw tool includes `_meta.aura_raw_request` with accepted forms plus examples for high-frequency workflows.
+Every raw tool schema has a top-level JSON Schema `type: "object"` for OpenAI/Codex function adapters. Inside that object, raw tools accept both object and JSON-string forms, and every raw tool includes `_meta.aura_raw_request` with accepted forms plus examples for high-frequency workflows.
 
 Every tool may include `_meta.aura_argument_notes` for fields that need values from prior Aura state. In particular, snipe `id` values must come from `snipe_get_cfgs` or `list_snipe_tasks`, copy-trade `id` values must come from `ct_get_cfgs`, and confirmation tools must use `data.confirmation_id` from a prepare response.
 

@@ -464,32 +464,22 @@ fn raw_request_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "RawRequestArg",
         "description": RAW_REQUEST_NOTICE,
-        "anyOf": [
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["request"],
-                "properties": {
-                    "request": {
-                        "description": "Aura client request object, or the same request encoded as a JSON string for adapters that only support scalar raw payloads.",
-                        "anyOf": [
-                            { "type": "object", "additionalProperties": true },
-                            { "type": "array" },
-                            { "type": "string" },
-                            { "type": "number" },
-                            { "type": "integer" },
-                            { "type": "boolean" },
-                            { "type": "null" }
-                        ]
-                    }
-                }
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+            "request": {
+                "description": "Aura client request object, or the same request encoded as a JSON string for adapters that only support scalar raw payloads. If omitted, the whole object is treated as the direct raw Aura request.",
+                "anyOf": [
+                    { "type": "object", "additionalProperties": true },
+                    { "type": "array" },
+                    { "type": "string" },
+                    { "type": "number" },
+                    { "type": "integer" },
+                    { "type": "boolean" },
+                    { "type": "null" }
+                ]
             },
-            {
-                "type": "object",
-                "description": "Direct raw Aura request object. Prefer the wrapped request form when the client supports it.",
-                "additionalProperties": true
-            }
-        ],
+        },
         "examples": [
             {
                 "request": {
@@ -1441,7 +1431,8 @@ mod tests {
                 .unwrap()
                 .contains("JSON string")
         );
-        assert!(trade["inputSchema"]["anyOf"].is_array());
+        assert_eq!(trade["inputSchema"]["type"], json!("object"));
+        assert!(trade["inputSchema"]["properties"]["request"]["anyOf"].is_array());
         assert_eq!(
             trade["_meta"]["aura_raw_request"]["accepted_argument_forms"][0],
             json!("{\"request\": { ... }}")
@@ -1455,6 +1446,18 @@ mod tests {
             trade["_meta"]["aura_mutation_flow"]["confirm_with"],
             json!("confirm_mutation")
         );
+    }
+
+    #[test]
+    fn all_tools_have_object_root_schemas_for_function_adapters() {
+        for tool in tools() {
+            assert_eq!(
+                tool["inputSchema"]["type"],
+                json!("object"),
+                "{} must expose a top-level object schema",
+                tool["name"].as_str().unwrap()
+            );
+        }
     }
 
     #[test]

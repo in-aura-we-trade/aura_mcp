@@ -29,6 +29,8 @@ Batch actions when possible:
 Most raw mutation tools accept the request object directly, `{ "request": { ... } }`, or
 `{ "request": "<JSON string>" }`. The JSON-string form exists for tool adapters that can only
 send scalar string arguments for raw payloads; prefer the object form when the client supports it.
+The published MCP schema still has a top-level JSON Schema `type: "object"` for every raw tool,
+because OpenAI/Codex function adapters reject schemas with a root `anyOf`.
 
 Addresses are base58 strings in MCP JSON and `solana_address::Address` in Rust. `Lamports`, `QuoteLamports`, and `UD128` use the Rust client serde shape. In Rust examples, prefer typed constructors such as `Lamports::new`, `Usdc::new`, `QuoteLamports::Usdc`, and `udec128!`.
 
