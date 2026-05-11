@@ -85,6 +85,8 @@ aura-mcp print-config codex
 * `aura://docs/auth`
 * `aura://docs/grpc`
 * `aura://docs/tools`
+* `aura://docs/api`
+* `aura://instructions/agent`
 * `aura://user_activity/latest`
 * `aura://proto/main`
 * `aura://examples/rust`
@@ -96,9 +98,29 @@ Read-only: `get_aura_status`, `get_account_info`, `list_wallets`, `list_snipe_ta
 
 Streaming activity: `start_user_activity`, `read_user_activity`, `user_activity_status`, and `stop_user_activity`. The MCP server owns the single Aura `user_activity` stream for the configured API key and sends internal `user_ping` keepalives. Clients can poll with `read_user_activity` or subscribe to `aura://user_activity/latest` and re-read it after `notifications/resources/updated`.
 
-Mutating: all non-streaming mutating Rust client calls are exposed through `prepare_*` tools and execute only through `confirm_mutation` or a matching confirm alias. Raw prepare tools accept a `request` object matching the corresponding `aura_api_client` request type.
+Mutating: all non-streaming mutating Rust client calls are exposed through `prepare_*` tools and execute only through `confirm_mutation` or a matching confirm alias. Raw prepare tools accept a `request` object matching the corresponding `aura_api_client` request type. They also accept `request` as a JSON-encoded string for adapters that expose raw payloads as scalar strings.
 
 Mutation tools require confirmation and are blocked when `read_only = true`.
+
+Every tool returned by `tools/list` includes Aura rate-limit metadata in `_meta.aura_rate_limits`. Trading-related tools also include `_meta.aura_trading_prerequisites` and repeat the wallet setup requirement in their descriptions.
+
+Tools also include `_meta.aura_batching_recommendations`. Agents should batch where the API supports it: attach known follow-up limit orders to `MarketTrade.limit_orders`, place multiple orders in one limit-order request, and use multi-entry `SnipeUpdate.updates`, `CtUpdate.updates`, and `ConfigPubkeys.pubkeys` payloads.
+
+Raw tools also include `_meta.aura_raw_request` with accepted argument forms and copy-ready examples for common trading and utility requests. Tools with state-derived arguments include `_meta.aura_argument_notes`; for example, snipe/copy-trade `id` fields must come from the matching list tool, and `prepare_add_wallet.keypair_base58` must be a full base58-encoded Solana keypair secret, not a public wallet address.
+
+## Trading Wallet Requirements
+
+After wallet connection or wallet add, the active trading wallet must have all Aura utility accounts opened and at least 1 durable nonce. This applies to market trades, limit orders, snipe execution, and copy-trade execution.
+
+If a trading call fails with a missing account or nonce error, inspect `list_wallets`, then prepare and confirm:
+
+```json
+{"tool": "prepare_open_util_accs", "arguments": {"address": "<WALLET>"}}
+```
+
+```json
+{"tool": "prepare_create_nonces", "arguments": {"request": {"wallet": "<WALLET>", "amount": 1}}}
+```
 
 ## Security Notes
 
@@ -113,3 +135,5 @@ Keep `read_only = true` unless you explicitly want the connected agent to be abl
 ## Rate Limits
 
 Aura rate limits API calls per key and IP: 4 requests/second and 60 requests/minute. Bursts above 10 requests/second or 150 requests/minute can trigger a 24-hour ban. MCP clients should throttle live tool calls, especially confirmed mutations.
+
+For broad agent sweeps, use about one live Aura API call every 0.5 s. `prepare_*` tools are local; `confirm_mutation`, `confirm_limit_order`, and `confirm_snipe_task` call Aura and count against the limit.

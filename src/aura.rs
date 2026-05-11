@@ -9,6 +9,10 @@ use anyhow::{Context, Result, anyhow};
 use aura_api_client::{
     client::{AuraClients, types::*},
     client_ext::UserCtx,
+    consts::{
+        BUY_FEE_LAMPORTS, BUY_TIPS_LAMPORTS, MAX_PRICE_IMPACT_DEF, SELL_FEE_LAMPORTS,
+        SELL_TIPS_LAMPORTS, SLIPPAGE_DEFAULT,
+    },
 };
 use chrono::{DateTime, Utc};
 use decisol::Lamports;
@@ -35,6 +39,7 @@ impl Interceptor for NoopInterceptor {
 }
 
 type Clients = AuraClients<NoopInterceptor, UserCtx>;
+const MCP_DEFAULT_SLOT_LATENCY: u8 = 16;
 
 #[derive(Debug, serde::Deserialize)]
 struct JsonAddress(String);
@@ -50,15 +55,16 @@ struct FriendlyMarketTrade {
     wallet: Option<JsonAddress>,
     amount: SwapAmount,
     mint: JsonAddress,
-    slippage: UD128,
-    tip: Lamports,
+    slippage: Option<UD128>,
+    tip: Option<Lamports>,
     procs: Option<TxnProcessors>,
-    nonce: UserNonceStrategy,
-    priority_fee: Lamports,
+    nonce: Option<UserNonceStrategy>,
+    priority_fee: Option<Lamports>,
     slot_latency: Option<u8>,
     expire_at: Option<DateTime<Utc>>,
     rpc_nonce: Option<u64>,
     max_price_impact: Option<UD128>,
+    #[serde(default)]
     limit_orders: FriendlyApiOrders,
 }
 
@@ -68,24 +74,27 @@ impl TryFrom<FriendlyMarketTrade> for MarketTrade {
     fn try_from(value: FriendlyMarketTrade) -> Result<Self> {
         Ok(Self {
             wallet: value.wallet.map(JsonAddress::parse).transpose()?,
+            slippage: value.slippage.unwrap_or(SLIPPAGE_DEFAULT),
+            tip: value.tip.unwrap_or_else(|| default_tip_for(&value.amount)),
+            priority_fee: value
+                .priority_fee
+                .unwrap_or_else(|| default_priority_fee_for(&value.amount)),
+            procs: Some(value.procs.unwrap_or_default()),
+            nonce: value.nonce.unwrap_or(UserNonceStrategy::Durable),
+            slot_latency: Some(value.slot_latency.unwrap_or(MCP_DEFAULT_SLOT_LATENCY)),
             amount: value.amount,
             mint: value.mint.parse()?,
-            slippage: value.slippage,
-            tip: value.tip,
-            procs: value.procs,
-            nonce: value.nonce,
-            priority_fee: value.priority_fee,
-            slot_latency: value.slot_latency,
             expire_at: value.expire_at,
             rpc_nonce: value.rpc_nonce,
-            max_price_impact: value.max_price_impact,
+            max_price_impact: Some(value.max_price_impact.unwrap_or(MAX_PRICE_IMPACT_DEF)),
             limit_orders: value.limit_orders.try_into()?,
         })
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 struct FriendlyApiOrders {
+    #[serde(default)]
     orders: Vec<FriendlyApiLimitOrder>,
 }
 
@@ -106,7 +115,7 @@ impl TryFrom<FriendlyApiOrders> for ApiOrders {
 #[derive(Debug, serde::Deserialize)]
 struct FriendlyApiLimitOrder {
     state: OrderState,
-    order: RawOrder,
+    order: FriendlyRawOrder,
     trigger: OrderEventTrigger,
     wallet: JsonAddress,
 }
@@ -117,11 +126,60 @@ impl TryFrom<FriendlyApiLimitOrder> for ApiLimitOrder {
     fn try_from(value: FriendlyApiLimitOrder) -> Result<Self> {
         Ok(Self {
             state: value.state,
-            order: value.order,
+            order: value.order.into(),
             trigger: value.trigger,
             wallet: value.wallet.parse()?,
         })
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FriendlyRawOrder {
+    slippage: Option<UD128>,
+    tip: Option<Lamports>,
+    fee: Option<Lamports>,
+    target: Target,
+    amount: SwapAmount,
+    procs: Option<TxnProcessors>,
+    nonce: Option<UserNonceStrategy>,
+    slot_latency: Option<u8>,
+}
+
+impl From<FriendlyRawOrder> for RawOrder {
+    fn from(value: FriendlyRawOrder) -> Self {
+        Self {
+            slippage: value.slippage.unwrap_or(SLIPPAGE_DEFAULT),
+            tip: value.tip.unwrap_or_else(|| default_tip_for(&value.amount)),
+            fee: value
+                .fee
+                .unwrap_or_else(|| default_priority_fee_for(&value.amount)),
+            target: value.target,
+            amount: value.amount,
+            procs: value.procs.unwrap_or_default(),
+            nonce: value.nonce.unwrap_or(UserNonceStrategy::Durable),
+            slot_latency: value.slot_latency.unwrap_or(MCP_DEFAULT_SLOT_LATENCY),
+        }
+    }
+}
+
+fn default_tip_for(amount: &SwapAmount) -> Lamports {
+    Lamports::new(if is_buy_amount(amount) {
+        BUY_TIPS_LAMPORTS
+    } else {
+        SELL_TIPS_LAMPORTS
+    })
+}
+
+fn default_priority_fee_for(amount: &SwapAmount) -> Lamports {
+    Lamports::new(if is_buy_amount(amount) {
+        BUY_FEE_LAMPORTS
+    } else {
+        SELL_FEE_LAMPORTS
+    })
+}
+
+fn is_buy_amount(amount: &SwapAmount) -> bool {
+    matches!(amount, SwapAmount::Buy(_) | SwapAmount::BuyPerc { .. })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -753,10 +811,18 @@ impl AuraApi {
                     .await?
                     .into_inner(),
             ),
-            "user_activity" => Ok(error_value(
-                "user_activity is a streaming API and is not exposed as a one-shot MCP tool",
-                "Use non-streaming read tools from MCP, or add a dedicated subscription bridge later.",
-            )),
+            "user_activity" => success(
+                "Aura user_activity is a streaming API managed by MCP activity tools",
+                json!({
+                    "streaming": true,
+                    "one_shot_tool": false,
+                    "start_tool": "start_user_activity",
+                    "read_tool": "read_user_activity",
+                    "status_tool": "user_activity_status",
+                    "stop_tool": "stop_user_activity",
+                    "resource": "aura://user_activity/latest"
+                }),
+            ),
             _ => Err(anyhow!("unknown Aura read API method {name}")),
         }
     }
@@ -1069,6 +1135,79 @@ impl AuraApi {
     }
 }
 
+pub fn validate_mutation_request(name: &str, args: Value) -> Result<()> {
+    match name {
+        "trade" => {
+            decode_friendly_request::<FriendlyMarketTrade, MarketTrade>(args)?;
+        }
+        "place_limit_orders" | "prepare_limit_order" => {
+            decode_friendly_request::<FriendlyUpdateTokenLimitOrders, UpdateTokenLimitOrders>(
+                args,
+            )?;
+        }
+        "delete_limit_orders" => {
+            decode_friendly_request::<FriendlyDeleteOrders, DeleteOrders>(args)?;
+        }
+        "clear_limit_orders" => {}
+        "snipe_new_cfg_def" | "prepare_snipe_task" => {}
+        "snipe_duplicate_cfg" | "snipe_del_cfg" => {
+            snipe_id_arg(args)?;
+        }
+        "snipe_turn_off_all_tasks" | "snipe_turn_on_all_tasks" | "snipe_clear_all_cfgs" => {}
+        "snipe_set_fields" | "update_snipe_task" => {
+            decode_request::<SnipeUpdate>(args)?;
+        }
+        "ct_new_cfg_def" => {}
+        "ct_duplicate_cfg" | "ct_del_cfg" => {
+            ct_id_arg(args)?;
+        }
+        "ct_turn_off_all_tasks" | "ct_turn_on_all_tasks" | "ct_clear_all_cfgs" => {}
+        "ct_set_fields" => {
+            decode_request::<CtUpdate>(args)?;
+        }
+        "change_api_key" => {
+            decode_friendly_request::<FriendlyApiKeyReq, ApiKeyReq>(args)?;
+        }
+        "switch_wallet" => {
+            address_arg(args, "address")?;
+        }
+        "remove_wallet" => {
+            decode_friendly_request::<FriendlyRemoveWallet, RemoveWallet>(args)?;
+        }
+        "add_wallet" => {
+            let args: AddWalletArg = decode_args(args)?;
+            Keypair::try_from_base58_string(&args.keypair_base58)
+                .context("keypair_base58 is not a valid Solana keypair")?;
+        }
+        "wrap_wsol" => {
+            decode_friendly_request::<FriendlyWrapWsolRequest, WrapWsolRequest>(args)?;
+        }
+        "unwrap_wsol" => {
+            decode_friendly_request::<FriendlyUnwrapWsolRequest, UnwrapWsolRequest>(args)?;
+        }
+        "open_ta" => {
+            decode_friendly_request::<FriendlyOpenTaRequest, OpenTaRequest>(args)?;
+        }
+        "open_util_accs" => {
+            address_arg(args, "address")?;
+        }
+        "make_withdraw" => {
+            decode_friendly_request::<FriendlyMakeWithdrawReq, MakeWithdrawReq>(args)?;
+        }
+        "create_nonces" => {
+            decode_friendly_request::<FriendlyCreateNoncesReq, CreateNoncesReq>(args)?;
+        }
+        "update_nonces" => {
+            decode_friendly_request::<FriendlyUpdateNoncesReq, UpdateNoncesReq>(args)?;
+        }
+        "dex_cu_set" => {
+            decode_dex_cu(args)?;
+        }
+        _ => return Err(anyhow!("unknown Aura mutation API method {name}")),
+    }
+    Ok(())
+}
+
 fn decode_args<T: DeserializeOwned>(args: Value) -> Result<T> {
     serde_json::from_value(args).context("invalid tool arguments")
 }
@@ -1096,10 +1235,16 @@ fn decode_dex_cu(args: Value) -> Result<DexCu> {
 }
 
 fn raw_request_value(args: Value) -> Value {
-    if let Ok(wrapped) = serde_json::from_value::<RawRequestArg>(args.clone()) {
+    let request = if let Ok(wrapped) = serde_json::from_value::<RawRequestArg>(args.clone()) {
         wrapped.request
     } else {
         args
+    };
+
+    if let Value::String(request) = request {
+        serde_json::from_str(&request).unwrap_or(Value::String(request))
+    } else {
+        request
     }
 }
 
@@ -1199,6 +1344,7 @@ fn success<T: Serialize>(message: impl Into<String>, data: T) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use decisol::QuoteLamports;
 
     #[test]
     fn empty_dex_cu_uses_client_defaults() {
@@ -1214,5 +1360,131 @@ mod tests {
         assert_eq!(decoded.ray_cpmm_sell, defaults.ray_cpmm_sell);
         assert_eq!(decoded.ray_ll_buy, defaults.ray_ll_buy);
         assert_eq!(decoded.ray_ll_sell, defaults.ray_ll_sell);
+    }
+
+    #[test]
+    fn friendly_market_trade_uses_execution_defaults() {
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let decoded = MarketTrade::try_from(FriendlyMarketTrade {
+            wallet: None,
+            amount: SwapAmount::Buy(QuoteLamports::Lamports(Lamports::new(10_000_u64))),
+            mint: JsonAddress(mint.into()),
+            slippage: None,
+            tip: None,
+            procs: None,
+            nonce: None,
+            priority_fee: None,
+            slot_latency: None,
+            expire_at: None,
+            rpc_nonce: None,
+            max_price_impact: None,
+            limit_orders: FriendlyApiOrders::default(),
+        })
+        .unwrap();
+
+        assert_eq!(decoded.slippage, SLIPPAGE_DEFAULT);
+        assert_eq!(decoded.tip, Lamports::new(BUY_TIPS_LAMPORTS));
+        assert_eq!(decoded.priority_fee, Lamports::new(BUY_FEE_LAMPORTS));
+        assert_eq!(decoded.slot_latency, Some(MCP_DEFAULT_SLOT_LATENCY));
+        assert_eq!(decoded.max_price_impact, Some(MAX_PRICE_IMPACT_DEF));
+        assert!(decoded.procs.is_some());
+        assert!(matches!(decoded.nonce, UserNonceStrategy::Durable));
+        assert!(decoded.limit_orders.orders.is_empty());
+    }
+
+    #[test]
+    fn friendly_market_trade_accepts_json_string_request_wrapper() {
+        let wallet = "AURAXd1nDoqtUDnjTFeedapcbSTid5XYhYpm2hhN6wd9";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let request = json!({
+            "wallet": wallet,
+            "amount": {"Buy": {"Lamports": 1_000_000}},
+            "mint": mint,
+            "limit_orders": {
+                "orders": [{
+                    "state": {
+                        "Api": {
+                            "id": null,
+                            "expire_dur": null,
+                            "activate_dur": [30, 0]
+                        }
+                    },
+                    "order": {
+                        "target": {"Market": {"mode": "Always"}},
+                        "amount": {"SellPerc": {"amount": "1"}}
+                    },
+                    "trigger": "Immediate",
+                    "wallet": wallet
+                }]
+            }
+        });
+        let payload = json!({ "request": request.to_string() });
+
+        let decoded = decode_friendly_request::<FriendlyMarketTrade, MarketTrade>(payload).unwrap();
+
+        assert_eq!(decoded.mint, parse_address(mint, "mint").unwrap());
+        assert_eq!(decoded.limit_orders.orders.len(), 1);
+        assert!(matches!(
+            decoded.limit_orders.orders[0].order.amount,
+            SwapAmount::SellPerc { .. }
+        ));
+    }
+
+    #[test]
+    fn friendly_raw_order_uses_sell_defaults() {
+        let order = RawOrder::from(FriendlyRawOrder {
+            slippage: None,
+            tip: None,
+            fee: None,
+            target: Target::Market {
+                mode: MarketExecuteMode::Always,
+            },
+            amount: SwapAmount::SellPerc { amount: UD128::ONE },
+            procs: None,
+            nonce: None,
+            slot_latency: None,
+        });
+
+        assert_eq!(order.slippage, SLIPPAGE_DEFAULT);
+        assert_eq!(order.tip, Lamports::new(SELL_TIPS_LAMPORTS));
+        assert_eq!(order.fee, Lamports::new(SELL_FEE_LAMPORTS));
+        assert_eq!(order.slot_latency, MCP_DEFAULT_SLOT_LATENCY);
+        assert!(matches!(order.nonce, UserNonceStrategy::Durable));
+    }
+
+    #[test]
+    fn friendly_limit_order_payload_accepts_execution_defaults() {
+        let wallet = "AURAXd1nDoqtUDnjTFeedapcbSTid5XYhYpm2hhN6wd9";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let payload = json!({
+            "mint": mint,
+            "orders": {
+                "orders": [{
+                    "state": {
+                        "Api": {
+                            "id": null,
+                            "expire_dur": null,
+                            "activate_dur": [30, 0]
+                        }
+                    },
+                    "order": {
+                        "target": {"Market": {"mode": "Always"}},
+                        "amount": {"SellPerc": {"amount": "1"}}
+                    },
+                    "trigger": "Immediate",
+                    "wallet": wallet
+                }]
+            }
+        });
+
+        let decoded = decode_friendly_request::<
+            FriendlyUpdateTokenLimitOrders,
+            UpdateTokenLimitOrders,
+        >(payload)
+        .unwrap();
+        let order = &decoded.orders.orders[0].order;
+        assert_eq!(order.slippage, SLIPPAGE_DEFAULT);
+        assert_eq!(order.slot_latency, MCP_DEFAULT_SLOT_LATENCY);
+        assert!(matches!(order.nonce, UserNonceStrategy::Durable));
     }
 }

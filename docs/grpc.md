@@ -21,4 +21,8 @@ Aura applies rate limits per API key and per IP address:
 - More than 150 requests per minute can trigger a ban
 - Ban duration is 24 hours
 
-MCP agents should throttle tool calls. For broad test sweeps, keep confirmed API calls around one request every 1.2-1.5 seconds.
+MCP agents should throttle tool calls. For broad test sweeps, keep confirmed API calls around one request every 0.5 seconds.
+
+## Trading Account Setup
+
+After wallet connection, the trading wallet must have all Aura utility accounts opened and at least 1 durable nonce. This applies to `Trade`, executable limit orders, sniper execution, and copy-trade execution. Use `FetchFullWalletInfo` / `list_wallets` to inspect `accounts_state`, `OpenUtilAccs` / `prepare_open_util_accs` to open utility accounts, and `CreateNonces` / `prepare_create_nonces` with `amount = 1` to create the first durable nonce.

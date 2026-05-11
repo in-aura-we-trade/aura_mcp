@@ -17,6 +17,7 @@ use std::{
 use tokio::{
     sync::{Mutex, Notify, mpsc, watch},
     task::JoinHandle,
+    time::Instant,
 };
 use tokio_stream::{Stream, StreamExt};
 
@@ -24,8 +25,9 @@ pub const ACTIVITY_URI: &str = "aura://user_activity/latest";
 const DEFAULT_MAX_BUFFERED: usize = 1024;
 const DEFAULT_PING_INTERVAL_MS: u64 = 10_000;
 const MAX_READ_LIMIT: usize = 500;
-const INITIAL_BACKOFF: Duration = Duration::from_millis(300);
-const MAX_BACKOFF: Duration = Duration::from_secs(5);
+const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60);
 
 type ActivityStream = Pin<Box<dyn Stream<Item = std::result::Result<Value, String>> + Send>>;
 
@@ -375,8 +377,9 @@ where
             let mut client = match self.inner.factory.connect().await {
                 Ok(client) => client,
                 Err(err) => {
-                    self.record_error(format!("failed to connect activity client: {err}"))
-                        .await;
+                    let error = format!("failed to connect activity client: {err}");
+                    self.record_error(error.clone()).await;
+                    backoff = backoff_for_error(&error, backoff);
                     if sleep_or_shutdown(backoff, &mut shutdown).await {
                         break;
                     }
@@ -391,8 +394,9 @@ where
                     stream
                 }
                 Err(err) => {
-                    self.record_error(format!("failed to open user_activity stream: {err}"))
-                        .await;
+                    let error = format!("failed to open user_activity stream: {err}");
+                    self.record_error(error.clone()).await;
+                    backoff = backoff_for_error(&error, backoff);
                     if sleep_or_shutdown(backoff, &mut shutdown).await {
                         break;
                     }
@@ -401,7 +405,10 @@ where
                 }
             };
 
-            let mut ping = tokio::time::interval(self.inner.ping_interval);
+            let mut ping = tokio::time::interval_at(
+                Instant::now() + self.inner.ping_interval,
+                self.inner.ping_interval,
+            );
             ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
@@ -416,7 +423,9 @@ where
                         match client.user_ping().await {
                             Ok(()) => self.record_ping().await,
                             Err(err) => {
-                                self.record_error(format!("user_ping failed: {err}")).await;
+                                let error = format!("user_ping failed: {err}");
+                                self.record_error(error.clone()).await;
+                                backoff = backoff_for_error(&error, backoff);
                                 break;
                             }
                         }
@@ -428,7 +437,9 @@ where
                                 backoff = INITIAL_BACKOFF;
                             }
                             Some(Err(err)) => {
-                                self.record_error(format!("user_activity stream error: {err}")).await;
+                                let error = format!("user_activity stream error: {err}");
+                                self.record_error(error.clone()).await;
+                                backoff = backoff_for_error(&error, backoff);
                                 break;
                             }
                             None => {
@@ -537,6 +548,21 @@ fn next_backoff(current: Duration) -> Duration {
     (current * 2).min(MAX_BACKOFF)
 }
 
+fn backoff_for_error(error: &str, current: Duration) -> Duration {
+    if is_rate_limit_error(error) {
+        RATE_LIMIT_BACKOFF
+    } else {
+        current
+    }
+}
+
+fn is_rate_limit_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("rate limit")
+        || error.contains("resource exhausted")
+        || error.contains("some resource has been exhausted")
+}
+
 async fn sleep_or_shutdown(duration: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
     tokio::select! {
         _ = tokio::time::sleep(duration) => *shutdown.borrow(),
@@ -638,7 +664,7 @@ mod tests {
     }
 
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
-        for _ in 0..100 {
+        for _ in 0..300 {
             if predicate() {
                 return;
             }
@@ -733,6 +759,7 @@ mod tests {
         let factory = MockFactory::new(vec![MockPlan::Pending]);
         let (manager, _rx) = manager(factory.clone(), 8);
         manager.start().await;
+        assert_eq!(factory.ping_count(), 0);
         wait_until(|| factory.ping_count() >= 2).await;
         assert!(manager.status().await.last_ping_ts_ms.is_some());
         manager.stop().await;
@@ -752,6 +779,21 @@ mod tests {
         assert!(status.last_error.unwrap_or_default().contains("boom"));
         assert_eq!(manager.manager_tasks_started_for_test(), 1);
         manager.stop().await;
+    }
+
+    #[test]
+    fn rate_limit_errors_use_full_cooldown() {
+        assert_eq!(
+            backoff_for_error(
+                "failed to open user_activity stream: code: 'Some resource has been exhausted', message: \"per-minute rate limit exceeded\"",
+                INITIAL_BACKOFF,
+            ),
+            RATE_LIMIT_BACKOFF
+        );
+        assert_eq!(
+            backoff_for_error("user_activity stream closed", INITIAL_BACKOFF),
+            INITIAL_BACKOFF
+        );
     }
 
     #[tokio::test]

@@ -66,6 +66,7 @@ pub struct OptionalMintArg {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IdArg {
+    /// Existing Aura task/config id returned by the matching list tool.
     pub id: i64,
 }
 
@@ -78,6 +79,7 @@ pub struct RawRequestArg {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddWalletArg {
+    /// Full Solana keypair secret encoded as base58. This is not a wallet address/public key.
     pub keypair_base58: String,
 }
 
@@ -128,7 +130,7 @@ pub fn validate_id(id: i64, field: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    const MINT: &str = "So11111111111111111111111111111111111111112";
+    const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
     #[test]
     fn validates_limit_order_args() {
