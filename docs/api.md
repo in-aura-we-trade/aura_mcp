@@ -6,7 +6,7 @@ It lets AI agents inspect Aura resources and call Aura gRPC API methods through 
 
 Aura is a low-latency Solana trading platform. Through this MCP server, an AI agent can access Aura functionality such as trading, wallet management, token account management, durable nonce management, copy-trading, sniping, limit orders, live user activity, token data, processor stats, and other Aura API features.
 
-This is powerful. Treat access to Aura MCP the same way you treat access to your trading wallet and Aura API key.
+MCP\API is powerful. Treat access to Aura MCP the same way you treat access to your trading wallet and Aura API key.
 
 ## Links
 
