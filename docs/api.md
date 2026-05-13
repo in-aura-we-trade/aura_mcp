@@ -1,364 +1,343 @@
-# Aura MCP
+# Aura API Methods
 
-Aura MCP is a local stdio MCP server for the Aura trading API.
+This MCP exposes the non-streaming Aura Rust client methods from `aura_api_client` plus an MCP-managed `user_activity` stream bridge.
 
-It lets AI agents inspect Aura resources and call Aura gRPC API methods through the Rust client in [`aura_api_client`](https://github.com/in-aura-we-trade/aura_api_client).
+All Aura API calls authenticate with the configured API key. In Rust, pass the API key as the first method argument. In MCP, run `aura-mcp login --api-key <KEY>` once and the server supplies it.
 
-Aura is a low-latency Solana trading platform. Through this MCP server, an AI agent can access Aura functionality such as trading, wallet management, token account management, durable nonce management, copy-trading, sniping, limit orders, live user activity, token data, processor stats, and other Aura API features.
+## Global Rules
 
-MCP\API is powerful. Treat access to Aura MCP the same way you treat access to your trading wallet and Aura API key.
+Rate limits are per API key and per IP address:
 
-## Links
+- 4 requests/second
+- 60 requests/minute
+- Bursts above 10 requests/second or 150 requests/minute can trigger a 24-hour ban
 
-* Aura: [https://aura.rehab](https://aura.rehab)
-* API endpoint: `http://trade.aura.rehab:40051`
-* Telegram bot: [@trade_with_aura_bot](https://t.me/trade_with_aura_bot)
-* Telegram group: [https://t.me/trade_with_aura](https://t.me/trade_with_aura)
-* Aura API client: [https://github.com/in-aura-we-trade/aura_api_client](https://github.com/in-aura-we-trade/aura_api_client)
-* Contact: [@trade_with_aura_bot](https://t.me/saul_goodman_aura)
+For agents, a safe broad-test cadence is one live Aura call every 0.5 s. `prepare_*` tools are local; confirmation tools call Aura.
 
-## What Aura MCP gives agents
+Trading prerequisite: after wallet connection, the active wallet must have all Aura utility accounts opened and at least 1 durable nonce. If trading, limit-order, snipe, or copy-trade execution fails with a missing account or nonce error, inspect `list_wallets`, then call and confirm `prepare_open_util_accs`, then call and confirm `prepare_create_nonces` with `amount = 1`.
 
-Aura MCP exposes the Aura trading API to MCP-compatible AI agents.
+Batch actions when possible:
 
-Depending on your API key permissions and local `read_only` setting, an agent can:
+- Use `MarketTrade.limit_orders` to attach known follow-up limit orders to the trade request. Do not call trade first and then place the same known limit orders separately.
+- Use `UpdateTokenLimitOrders.orders` to place multiple limit orders for a mint in one request.
+- Use one `SnipeUpdate` with multiple `updates` entries for snipe task edits.
+- Use one `CtUpdate` with multiple `updates` entries for copy-trade task edits.
+- Use one `ConfigPubkeys` update with multiple `pubkeys` entries for mints, devs, copy wallets, and blacklists.
 
-* Inspect Aura docs, examples, protobuf definitions, and agent instructions.
-* Query token status, token metadata, trade stats, pool data, positions, wallet state and more...
-* Change wallets, snipes, copy-trade tasks, limit orders, processor stats, and DEX compute-unit settings.
-* Subscribe to live `UserActivity` updates for trades, confirmations, account events, limit-order executions, and errors.
-* Prepare and confirm trading operations.
-* Manage wallets, token accounts, Aura utility accounts, and durable nonces.
-* Create, update, enable, disable, duplicate, delete, and clear snipe tasks.
-* Create, update, enable, disable, duplicate, delete, and clear copy-trade tasks.
-* Place, delete, clear, and manage limit orders.
-* Execute other supported Aura API mutations through confirmation-based MCP tools.
+## MCP Shapes
 
-Keep `read_only = true` unless you intentionally want the connected agent to be able to prepare and confirm mutating trading actions.
+Most raw mutation tools accept the request object directly, `{ "request": { ... } }`, or
+`{ "request": "<JSON string>" }`. The JSON-string form exists for tool adapters that can only
+send scalar string arguments for raw payloads; prefer the object form when the client supports it.
+The published MCP schema still has a top-level JSON Schema `type: "object"` for every raw tool,
+because OpenAI/Codex function adapters reject schemas with a root `anyOf`.
 
-## Install
+Addresses are base58 strings in MCP JSON and `solana_address::Address` in Rust. `Lamports`, `QuoteLamports`, and `UD128` use the Rust client serde shape. In Rust examples, prefer typed constructors such as `Lamports::new`, `Usdc::new`, `QuoteLamports::Usdc`, and `udec128!`.
 
-Install directly from GitHub:
+Percent `UD128` values are ratios, not whole percentage numbers: `0` is 0%, `UD128::ONE` / `"1"` is 100%, and `udec128!(0.5)` / `"0.5"` is 50%. Do not pass `100` for 100%.
 
-```bash
-cargo install --git https://github.com/in-aura-we-trade/aura_mcp
-```
+Enums use Rust variant names in raw JSON, for example `Durable`, `Ata`, `Immediate`, `Buy`, `Sell`, `Market`, and `Always`.
 
-Verify the installation:
+`chrono::TimeDelta` fields such as `OrderState::Api.activate_dur` and `expire_dur` use tuple JSON: `[seconds, nanoseconds]`. Example for 30 seconds: `[30, 0]`.
 
-```bash
-aura-mcp --help
-```
+## Friendly Defaults
 
-## Build from source
+For MCP-friendly `prepare_trade`, `prepare_place_limit_orders`, and `prepare_limit_order` payloads, agents may omit common execution knobs:
 
-For local development:
+- `slippage`: defaults to `SLIPPAGE_DEFAULT` from `aura_api_client` (`0.2`).
+- `tip`: defaults by side to `BUY_TIPS_LAMPORTS` or `SELL_TIPS_LAMPORTS`.
+- `priority_fee` on `MarketTrade`, and `fee` on `RawOrder`: defaults by side to `BUY_FEE_LAMPORTS` or `SELL_FEE_LAMPORTS`.
+- `procs`: defaults to `TxnProcessors::default()` from the Rust API client.
+- `nonce`: defaults to `UserNonceStrategy::Durable`.
+- `slot_latency`: defaults to `16` for MCP tool calls.
+- `max_price_impact`: defaults to `MAX_PRICE_IMPACT_DEF` from `aura_api_client` (`0.5`) for `MarketTrade`.
+- `limit_orders`: defaults to an empty `ApiOrders` list for `MarketTrade`.
 
-```bash
-git clone https://github.com/in-aura-we-trade/aura_mcp
-cd aura_mcp
-cargo build --release
-```
+Required trading intent fields are still required: `mint`, `amount`, limit-order `target`, and limit-order `wallet`.
 
-The release binary will be available at:
+## Core AuraRpc
 
-```bash
-./target/release/aura-mcp
-```
+`aura_user_ping` / Rust `aura().user_ping(api_key, Ping { count })`
 
-## Login
+- Purpose: health/keepalive ping.
+- Request `Ping`: `count` is a caller-selected counter.
+- Response `Pong`: `count` echoes the counter.
 
-Get an API key from [@trade_with_aura_bot](https://t.me/trade_with_aura_bot) in the `API | Extension` tab.
+`start_user_activity`, `read_user_activity`, `user_activity_status`, `stop_user_activity` / Rust `aura().user_activity(api_key, UserActionEventSub)`
 
-Then log in locally:
+- Purpose: live stream of trade callbacks, confirmed trade events, limit-order events, token trade stats, pings, and pongs.
+- MCP owns one stream and sends internal keepalive pings.
+- `read_user_activity` fields: `after_seq` returns events with a higher sequence; `limit` limits returned events and is clamped to 500.
 
-```bash
-aura-mcp login --api-key <KEY>
-```
+`prepare_trade` / Rust `aura().trade(api_key, MarketTrade)`
 
-By default, config is stored at:
+- Purpose: submit a market trade, optionally with auto-created follow-up limit orders.
+- Requires utility accounts and at least 1 durable nonce on the active wallet.
+- Request `MarketTrade` fields:
+- `wallet`: optional wallet address. If omitted, Aura uses the active wallet.
+- `amount`: `SwapAmount`, one of `Buy(QuoteLamports)`, `BuyPerc { amount }`, `SellPerc { amount }`, `SellOut(QuoteLamports)`, or `SellInit`.
+- `mint`: token mint address.
+- `slippage`: optional decimal slippage percent; defaults to `SLIPPAGE_DEFAULT`.
+- `tip`: optional Jito/processor tip in lamports; defaults by buy/sell side.
+- `procs`: optional `TxnProcessors`; defaults to `TxnProcessors::default()`.
+- `nonce`: optional `UserNonceStrategy`; defaults to `Durable`.
+- `priority_fee`: optional priority fee in lamports; defaults by buy/sell side.
+- `slot_latency`: optional maximum slot latency; defaults to `16`.
+- `expire_at`: optional UTC expiration time.
+- `rpc_nonce`: optional caller nonce.
+- `max_price_impact`: optional decimal price-impact bound; defaults to `MAX_PRICE_IMPACT_DEF`.
+- `limit_orders`: optional `ApiOrders` to attach after trade execution; defaults to no orders.
+- Response `TradeResponse`: `slot` is the slot where the trade request was accepted.
 
-```text
-~/.config/aura/mcp.toml
-```
+Recommendation: if a trade should create follow-up limit orders, include them in `limit_orders` on this request. That saves a separate confirmed API call and keeps the order setup tied to the trade.
 
-You can override the config path with:
+`fetch_state_info` / `get_account_info` / Rust `aura().fetch_state_info(api_key, FetchInfo)`
 
-```bash
-export AURA_MCP_CONFIG=/path/to/mcp.toml
-```
+- Purpose: active wallet, balances, optional token account state, and counters.
+- Response `FetchInfoResponse`: `wallet`, `balances`, `token_accounts`, `wallets_num`, `limit_orders_num`, `ct_cfgs_num`, `snipes_num`.
 
-Example config:
+`fetch_full_wallet_info` / `list_wallets` / Rust `aura().fetch_full_wallet_info(api_key, FetchFullWalletsInfoReq)`
 
-```toml
-api_endpoint = "http://trade.aura.rehab:40051"
-api_key = "..."
-read_only = true
-```
+- Purpose: active wallet, all wallets, balances, and account setup state.
+- Response `FetchFullWalletsInfo`: `active`, `wallets`, `balances`, `accounts_state`.
+- `accounts_state.token_accounts`: booleans for WSOL/USDC/USD1/USDT ATA and PDA accounts.
+- `accounts_state.util_accs`: `pump_uva`, `pump_amm_uva`, `pump_amm_uva_ata`, `custom_nonce`, and `durable_nonces`.
 
-Use `read_only = true` when you want agents to inspect data without being able to execute mutations.
+`get_token_status` / Rust `aura().get_token_status(api_key, address)`
 
-Set `read_only = false` only when you intentionally want the connected AI agent to have trading and management access through Aura API.
+- Purpose: fetch most-liquid pool and token metadata.
+- Response `TokenStatus`: `most_liq_pool` and `token_meta`.
 
-## Run
+`get_token_most_liq_pool` / Rust `aura().get_token_most_liq_pool(api_key, address)`
 
-Start the MCP server:
+- Purpose: fetch the most-liquid pool for a mint.
+- Response `TokenPool`: `mint`, `pool_id`, `pool_type`, `migration_status`, `price`, raw and virtual base/quote liquidity.
 
-```bash
-aura-mcp serve
-```
+`get_token_meta` / Rust `aura().get_token_meta(api_key, address)`
 
-`serve` uses MCP over stdio.
+- Purpose: fetch token metadata.
+- Response `TokenMeta`: `supply`, `tax_bps`, `ticker`, `name`, `mint_auth`, `freeze_auth`, `socials`.
 
-Stdout is reserved for JSON-RPC messages. Logs are written to stderr.
+`get_token_trade_stats` / Rust `aura().get_token_trade_stats(api_key, address)`
 
-## Client configuration
+- Purpose: fetch per-token balance/trade state.
+- Response `TokenTradeState`: PDA/ATA balances, base kind, 2022 flag, buy/sell totals and counts, last traded slot, quote state, total quote position, mint.
 
-Aura MCP can print ready-to-use config snippets for supported clients.
+`get_token_positions` / Rust `aura().get_token_positions(api_key, TokenPositionsReq)`
 
-### Claude
+- Purpose: fetch token positions and SOL balance.
+- Response `TokenPositions`: `v` positions and `sol_balance`.
 
-```bash
-aura-mcp print-config claude
-```
+`get_token_positions_ui` / Rust `aura().get_token_positions_ui(api_key, TokenPositionsUiReq { mint })`
 
-### Codex
+- Purpose: fetch positions plus optional selected token state.
+- Request `TokenPositionsUiReq`: optional `mint`.
+- Response `TokenPositionsUi`: positions, SOL balance, optional selected `TokenTradeState`.
 
-```bash
-aura-mcp print-config codex
-```
+## Limit Orders
 
-Use the printed config in your MCP-compatible client.
+Trading prerequisite applies to limit-order execution. Open utility accounts and at least 1 durable nonce before placing executable orders.
 
-## Resources
+`get_token_limit_orders` / Rust `limit_orders().get_token_limit_orders(api_key, mint)`
 
-Aura MCP exposes resources that agents can read without calling trading tools:
+- Purpose: list limit orders for one token.
+- Response `TokenLimitOrders`: `mint`, `orders`.
 
-```text
-aura://docs/overview
-aura://docs/auth
-aura://docs/grpc
-aura://docs/tools
-aura://docs/api
-aura://instructions/agent
-aura://user_activity/latest
-aura://proto/main
-aura://examples/rust
-aura://examples/typescript
-```
+`get_limit_orders` / `list_limit_orders` / Rust `limit_orders().get_limit_orders(api_key, GetLimitOrders)`
 
-`aura://user_activity/latest` is updated from the active user activity stream when streaming is enabled.
+- Purpose: list all active limit orders.
+- Response `LimitOrders`: `orders`.
 
-## Tools
+`prepare_place_limit_orders` / `prepare_limit_order` / Rust `limit_orders().place_limit_orders(api_key, UpdateTokenLimitOrders)`
 
-Aura MCP exposes three main tool groups.
+- Purpose: add or update limit orders for a mint.
+- Request `UpdateTokenLimitOrders`: `mint`, `orders`.
+- Response `UpdateLimitOrdersResponse`: `total_orders`, `ids`.
+- Recommendation: place all known orders for that mint in one `orders` array.
 
-### Read-only tools
+`cancel_limit_order` / `prepare_delete_limit_orders` / Rust `limit_orders().delete_limit_orders(api_key, DeleteOrders)`
 
-Read-only tools inspect Aura state, docs, and user data without preparing mutations.
+- Purpose: delete selected limit orders or all orders for a mint.
+- Request `DeleteOrders`: `mint`, `all`, `ids`.
+- Response `DeleteLimitOrdersResponse`: `total_orders_after`.
 
-Examples include:
+`prepare_clear_limit_orders` / Rust `limit_orders().clear_limit_orders(api_key, ClearLimitOrders)`
 
-```text
-get_aura_status
-get_account_info
-list_wallets
-list_snipe_tasks
-list_limit_orders
-get_bot_status
-explain_aura_error
-```
+- Purpose: delete all limit orders.
+- Response `ClearLimitOrdersResponse`: empty response.
 
-Aura MCP also exposes one-shot read methods from the Aura Rust client for token data, positions, limit orders, snipe tasks, copy-trade tasks, processor stats, DEX compute-unit settings, and other supported API surfaces.
+Limit-order request structs:
 
-### Streaming tools
+- `ApiOrders.orders`: list of `LimitOrder`.
+- `LimitOrder.state`: `OrderState::Api { id, expire_dur, activate_dur }` for new API orders or `Placed { id, left_attempts, expire_timestamp_utc, status, activate_timestamp_utc }` when returned from Aura.
+- `LimitOrder.order`: `RawOrder`.
+- `LimitOrder.trigger`: `Immediate`, `Migration`, `DevBuy`, or `DevSell`.
+- `LimitOrder.wallet`: wallet that executes the order.
+- `RawOrder.slippage`: optional decimal slippage percent; defaults to `SLIPPAGE_DEFAULT`.
+- `RawOrder.tip`: optional tip lamports; defaults by buy/sell side.
+- `RawOrder.fee`: optional priority fee lamports; defaults by buy/sell side.
+- `RawOrder.target`: `Target`.
+- `RawOrder.amount`: `SwapAmount`.
+- `RawOrder.procs`: optional transaction processor flags; defaults to `TxnProcessors::default()`.
+- `RawOrder.nonce`: optional nonce strategy; defaults to `Durable`.
+- `RawOrder.slot_latency`: optional maximum slot latency; defaults to `16`.
+- `Target`: `Price`, `Profit`, `MovingPerc`, `PricePerc`, `Mcap`, or `Market { mode }`.
+- `TargetMarket.mode`: `Always`, `OnlyInProfit`, or `OnlyInLoss`.
 
-Aura MCP owns the single Aura `UserActivity` stream for the configured API key.
+## Snipe
 
-Streaming tools include:
+Trading prerequisite applies to snipe execution: the wallet selected by the task must have utility accounts and at least 1 durable nonce.
 
-```text
-start_user_activity
-read_user_activity
-user_activity_status
-stop_user_activity
-```
+All snipe tools that take `id` require an existing snipe task id returned by `snipe_get_cfgs` or `list_snipe_tasks`. Placeholder ids are valid JSON but return not-found or permission errors from Aura.
 
-The MCP server sends internal `user_ping` keepalives.
+Read tools:
 
-Clients can poll with `read_user_activity` or subscribe to `aura://user_activity/latest` and re-read it after `notifications/resources/updated`.
+- `snipe_get_cfgs`: list task ids and names.
+- `snipe_get_cfg`: fetch one task.
+- `snipe_get_mints`: fetch tracked mints.
+- `snipe_get_devs`: fetch tracked dev wallets.
+- `snipe_get_blacklist`: fetch blacklist.
+- `snipe_cfg_get_limit_orders`: fetch task limit orders.
+- `snipe_cfg_get_buy_txn_proc`: fetch buy processor flags.
+- `snipe_cfg_get_sell_txn_proc`: fetch sell processor flags.
 
-### Mutating tools
+Mutation tools:
 
-Mutating tools are exposed as `prepare_*` tools.
+- `prepare_snipe_new_cfg_def`: create a default task.
+- `prepare_snipe_duplicate_cfg`: duplicate task by `id`.
+- `prepare_snipe_turn_off_all_tasks`: disable all snipe tasks.
+- `prepare_snipe_turn_on_all_tasks`: enable all snipe tasks.
+- `prepare_snipe_del_cfg`: delete task by `id`.
+- `prepare_snipe_clear_all_cfgs`: delete all snipe tasks.
+- `prepare_snipe_set_fields` / `update_snipe_task`: update fields with `SnipeUpdate`.
 
-They do not execute immediately. They prepare a mutation that must later be confirmed through:
+`SnipeUpdate` fields: `cfg_id` and `updates`. `SnipeUpdateField` variants include buy/sell mode and amount, config limits, left buys, buy/sell processors, limit orders, dev/mint/blacklist config pubkeys, name, mcap bounds, limit-order switches, slippage, tips, fees, slot latency, on/off flag, DEX flags, age filters, mint/freeze filters, dev buy bounds, buy/sell nonce strategy, and wallet.
 
-```text
-confirm_mutation
-```
+Recommendation: batch all known field changes in one `SnipeUpdate.updates` array. For mints, devs, and blacklists, use one `ConfigPubkeys` value with multiple `pubkeys` instead of repeated update calls.
 
-or a matching confirm alias such as:
+`SnipeTask` response fields: `cfg_id`, `user_id`, `flags`, `values`, and `triggers`.
 
-```text
-confirm_limit_order
-confirm_snipe_task
-```
+## Copy Trade
 
-Mutation tools are blocked when:
+Trading prerequisite applies to copy-trade execution: the wallet selected by the task must have utility accounts and at least 1 durable nonce.
 
-```toml
-read_only = true
-```
+All copy-trade tools that take `id` require an existing copy-trade task id returned by `ct_get_cfgs`. Placeholder ids are valid JSON but return not-found or permission errors from Aura.
 
-Set `read_only = false` only when you intentionally want the connected agent to be able to prepare and confirm mutations.
+Read tools:
 
-## Raw request tools
+- `ct_get_cfgs`: list task ids and names.
+- `ct_get_cfg`: fetch one task.
+- `ct_get_copy_wallets`: fetch watched wallets.
+- `ct_get_buy_blacklist`: fetch buy blacklist.
+- `ct_get_sell_blacklist`: fetch sell blacklist.
+- `ct_cfg_get_limit_orders`: fetch task limit orders.
+- `ct_cfg_get_buy_txn_proc`: fetch buy processor flags.
+- `ct_cfg_get_sell_txn_proc`: fetch sell processor flags.
 
-Raw prepare tools accept a `request` object matching the corresponding `aura_api_client` request type.
+Mutation tools:
 
-They also accept `request` as a JSON-encoded string for adapters that expose raw payloads as scalar strings.
+- `prepare_ct_new_cfg_def`: create default copy-trade task.
+- `prepare_ct_duplicate_cfg`: duplicate task by `id`.
+- `prepare_ct_turn_off_all_tasks`: disable all copy-trade tasks.
+- `prepare_ct_turn_on_all_tasks`: enable all copy-trade tasks.
+- `prepare_ct_del_cfg`: delete task by `id`.
+- `prepare_ct_clear_all_cfgs`: delete all copy-trade tasks.
+- `prepare_ct_set_fields`: update fields with `CtUpdate`.
 
-Every raw tool includes metadata to help agents construct safer calls:
+`CtUpdate` fields: `cfg_id` and `updates`. `CtUpdateField` variants include config limits, left buys, buy/sell mode, fixed/percent buy/sell amounts, buy/sell processors, limit orders, watched wallets, buy/sell blacklists, blacklist switches, name, mcap bounds, slippage, tips, fees, slot latency, on/off flag, migration filters, follow modes, DEX flags, age filters, mint/freeze filters, master buy bounds, limit-order switches, reverse buy/sell, allowed buys/sells, buy/sell nonce strategy, and wallet.
 
-* `_meta.aura_rate_limits`
-* `_meta.aura_trading_prerequisites`
-* `_meta.aura_batching_recommendations`
-* `_meta.aura_raw_request`
-* `_meta.aura_argument_notes`
+Recommendation: batch all known field changes in one `CtUpdate.updates` array. For watched wallets and blacklists, use one `ConfigPubkeys` value with multiple `pubkeys` instead of repeated update calls.
 
-Tools with state-derived arguments include notes about where values must come from. For example:
+`CtTask` response fields: `cfg_id`, `user_id`, `flags`, `values`, and `triggers`.
 
-* Snipe and copy-trade `id` fields must come from the matching list tool.
-* `prepare_add_wallet.keypair_base58` must be a full base58-encoded Solana keypair secret, not a public wallet address.
+## Utilities
 
-## Batching recommendations
+`prepare_change_api_key` / Rust `utils().change_api_key(api_key, ApiKeyReq)`
 
-Agents should batch where the Aura API supports it.
+- Request `ApiKeyReq`: `key` is the new API key address.
+- Response `ApiKeyResp`: empty.
 
-Recommended patterns:
+`txn_procs_stat` / Rust `utils().txn_procs_stat(api_key, TxnProcsStatReq)`
 
-* Attach known follow-up limit orders directly to `MarketTrade.limit_orders`.
-* Place multiple limit orders in one limit-order request.
-* Use multi-entry `SnipeUpdate.updates`.
-* Use multi-entry `CtUpdate.updates`.
-* Use multi-entry `ConfigPubkeys.pubkeys`.
+- Purpose: inspect transaction processor performance.
+- Response `TxnProcessorsStats`: per-processor `ProcessorStats` for Jito, Aura, Bloxroute, Nozomi, Next Block, Slot0, Astra, Block Razor, TPU Pen, Node1, Stellium, Helius, Soyas, Falcon, Raiden, Circular, Flashblock, Moon, and Blocksprint.
+- `ProcessorStats`: total slot latency, sent/landed/error transaction counts, priority fee, and tip.
 
-Batching reduces API calls and lowers the chance of hitting rate limits.
+`prepare_switch_wallet` / Rust `utils().switch_wallet(api_key, address)`
 
-## Trading wallet requirements
+- Purpose: switch active wallet.
+- Request: wallet address.
+- Response `Done`.
 
-After connecting or adding a wallet, the active trading wallet must have:
+`prepare_remove_wallet` / Rust `utils().remove_wallet(api_key, RemoveWallet)`
 
-* All Aura utility accounts opened.
-* At least 1 durable nonce.
+- Request `RemoveWallet`: `to_remove`, `new` active wallet after removal.
+- Response `Done`.
 
-This applies to:
+`prepare_add_wallet` / Rust `utils().add_wallet(api_key, Keypair)`
 
-* Market trades
-* Limit orders
-* Snipe execution
-* Copy-trade execution
+- Purpose: connect/add a wallet from a Solana keypair.
+- MCP field: `keypair_base58`, the full Solana keypair secret encoded as base58. This is normally the 64 secret-key bytes encoded with bs58, not the wallet address/public key.
+- Response: fee/lamports value returned by Aura.
+- After adding a wallet, open utility accounts and create at least 1 durable nonce before trading.
 
-If a trading call fails with a missing account or nonce error, inspect wallets first:
+`prepare_wrap_wsol` / Rust `utils().wrap_wsol(api_key, WrapWsolRequest)`
 
-```json
-{
-  "tool": "list_wallets",
-  "arguments": {}
-}
-```
+- Request `WrapWsolRequest`: `owner`, `kind` (`Ata` or `Pda`), `amount`.
+- Response: transaction signature.
 
-Then prepare and confirm utility account setup:
+`prepare_unwrap_wsol` / Rust `utils().unwrap_wsol(api_key, UnwrapWsolRequest)`
 
-```json
-{
-  "tool": "prepare_open_util_accs",
-  "arguments": {
-    "address": "<WALLET>"
-  }
-}
-```
+- Request `UnwrapWsolRequest`: `owner`, `kind`, `amount` (`All` or `Some(u64)`).
+- Response: transaction signature.
 
-Then prepare and confirm nonce creation:
+`prepare_open_ta` / Rust `utils().open_ta(api_key, OpenTaRequest)`
 
-```json
-{
-  "tool": "prepare_create_nonces",
-  "arguments": {
-    "request": {
-      "wallet": "<WALLET>",
-      "amount": 1
-    }
-  }
-}
-```
+- Request `OpenTaRequest`: `owner`, `mint`, `kind`, `is_2022`.
+- Response: transaction signature.
 
-## Security notes
+`prepare_open_util_accs` / Rust `utils().open_util_accs(api_key, wallet)`
 
-Aura MCP can give an AI agent full trading access to the Solana blockchain through Aura API.
+- Purpose: open Aura utility accounts required for trading.
+- Request: wallet address.
+- Response: transaction signature.
 
-Depending on your API key permissions and `read_only` setting, this can include:
+`prepare_make_withdraw` / Rust `utils().make_withdraw(api_key, MakeWithdrawReq)`
 
-* Trading
-* Wallet management
-* Token account management
-* Durable nonce management
-* Limit order management
-* Copy-trade control
-* Snipe control
-* Other mutating trading operations
+- Request `MakeWithdrawReq`: `destination`, `amount`.
+- Response `MakeWithdrawResp`: `sig`, `fee`.
 
-Security recommendations:
+`prepare_create_nonces` / Rust `utils().create_nonces(api_key, CreateNoncesReq)`
 
-* Keep `read_only = true` unless you explicitly want agent-controlled mutations.
-* Do not commit `mcp.toml`.
-* Do not expose your Aura API key to untrusted agents, prompts, tools, or logs.
-* Do not give agents access to unrelated shell or file tools unless you understand the risk.
-* Use separate API keys for different agents and workflows when possible.
-* Rotate/change your API key from the Telegram bot if it is exposed.
-* Review prepared mutations before confirming them.
-* Keep the `UserActivity` stream running when executing trading workflows so the agent can observe confirmations, errors, and account events.
+- Purpose: create durable nonce accounts. Trading needs at least one.
+- Request `CreateNoncesReq`: `wallet`, `amount`.
+- Response `CreateNoncesResp`: `sig`.
 
-The API key is stored locally and is never printed by `login`.
+`prepare_update_nonces` / Rust `utils().update_nonces(api_key, UpdateNoncesReq)`
 
-On Unix, the config writer requests `0600` file permissions.
+- Purpose: refresh nonce state for a wallet.
+- Request `UpdateNoncesReq`: `wallet`.
+- Response `UpdateNoncesResp`: `found`, `updated`.
 
-## Rate limits
+`prepare_dex_cu_set` / Rust `utils().dex_cu_set(api_key, AtomicDexCU)`
 
-Aura rate limits API calls per key and IP:
+- Purpose: set compute unit values per DEX/action.
+- Request `AtomicDexCU`: `pump_buy`, `pump_sell`, `pump_amm_buy`, `pump_amm_sell`, `ray_amm_buy`, `ray_amm_sell`, `ray_cpmm_buy`, `ray_cpmm_sell`, `ray_ll_buy`, `ray_ll_sell`.
+- MCP accepts `{}` to use `DexCu::init()` defaults.
 
-```text
-4 requests/second
-60 requests/minute
-```
+`dex_cu_get` / Rust `utils().dex_cu_get(api_key, GetDexCu)`
 
-Bursts above these limits can trigger stronger protection.
+- Purpose: read compute unit settings.
+- Response `AtomicDexCU`.
 
-Avoid exceeding:
+## Common Struct Fields
 
-```text
-10 requests/second
-150 requests/minute
-```
+`TxnProcessors` flags: `jito_validators`, `jito_bundled`, `aura`, `bloxroute`, `nozomi`, `next_block`, `slot0`, `astra`, `block_razor`, `node1`, `tpu_penetrator`, `helius`, `stellium`, `soyas`, `falcon`, `raiden`, `circular`, `flash_block`, `moon`, `blocksprint`, `aura_revert`.
 
-Large bursts can trigger a 24-hour ban.
+`ConfigPubkeys`: `act` (`Insert`, `Delete`, `Clear`) and `pubkeys`.
 
-Recommended agent behavior:
+`WalletBalances`: SOL plus WSOL/USDC/USD1/USDT ATA and PDA balances.
 
-* Use about one live Aura API call every `0.5s` for broad sweeps.
-* Batch requests where possible.
-* Prefer local `prepare_*` tools before live confirmation calls.
-* Remember that `confirm_mutation`, `confirm_limit_order`, and `confirm_snipe_task` call Aura and count against rate limits.
-* Avoid repeatedly polling live API tools when `UserActivity` streaming can provide updates.
+`WalletTaInfo`: booleans for token-account existence plus `positions`.
 
-## Typical workflow
-
-1. Install Aura MCP.
-2. Get an API key from [@trade_with_aura_bot](https://t.me/trade_with_aura_bot).
-3. Run `aura-mcp login --api-key <KEY>`.
-4. Keep `read_only = true` for inspection-only agents.
-5. Run `aura-mcp serve` from an MCP-compatible client.
-6. Let the agent inspect docs and list current Aura state.
-7. Set `read_only = false` only when you intentionally want the agent to prepare and confirm trading mutations.
-8. Confirm mutations only after reviewing the prepared action.
+`UtilAccsInfo`: booleans for pump utility accounts and custom nonce plus `durable_nonces`.
