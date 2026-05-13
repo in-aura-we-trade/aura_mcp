@@ -15,7 +15,7 @@ MCP\API is powerful. Treat access to Aura MCP the same way you treat access to y
 * Telegram bot: [@trade_with_aura_bot](https://t.me/trade_with_aura_bot)
 * Telegram group: [https://t.me/trade_with_aura](https://t.me/trade_with_aura)
 * Aura API client: [https://github.com/in-aura-we-trade/aura_api_client](https://github.com/in-aura-we-trade/aura_api_client)
-* Contact: [@trade_with_aura_bot](https://t.me/saul_goodman_aura)
+* Contact: [@saul_goodman_aura](https://t.me/saul_goodman_aura)
 
 ## What Aura MCP gives agents
 
