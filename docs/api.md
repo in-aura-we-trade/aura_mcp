@@ -51,6 +51,7 @@ For MCP-friendly `prepare_trade`, `prepare_place_limit_orders`, and `prepare_lim
 - `nonce`: defaults to `UserNonceStrategy::Durable`.
 - `slot_latency`: defaults to `16` for MCP tool calls.
 - `max_price_impact`: defaults to `MAX_PRICE_IMPACT_DEF` from `aura_api_client` (`0.5`) for `MarketTrade`.
+- `filters`: defaults to empty `TradeFilters` for `MarketTrade`.
 - `limit_orders`: defaults to an empty `ApiOrders` list for `MarketTrade`.
 
 Required trading intent fields are still required: `mint`, `amount`, limit-order `target`, and limit-order `wallet`.
@@ -86,6 +87,7 @@ Required trading intent fields are still required: `mint`, `amount`, limit-order
 - `expire_at`: optional UTC expiration time.
 - `rpc_nonce`: optional caller nonce.
 - `max_price_impact`: optional decimal price-impact bound; defaults to `MAX_PRICE_IMPACT_DEF`.
+- `filters`: `TradeFilters` with optional `min_mcap` and `max_mcap`; MCP-friendly payloads default to empty filters.
 - `limit_orders`: optional `ApiOrders` to attach after trade execution; defaults to no orders.
 - Response `TradeResponse`: `slot` is the slot where the trade request was accepted.
 
@@ -171,7 +173,7 @@ Limit-order request structs:
 - `ApiOrders.orders`: list of `LimitOrder`.
 - `LimitOrder.state`: `OrderState::Api { id, expire_dur, activate_dur }` for new API orders or `Placed { id, left_attempts, expire_timestamp_utc, status, activate_timestamp_utc }` when returned from Aura.
 - `LimitOrder.order`: `RawOrder`.
-- `LimitOrder.trigger`: `Immediate`, `Migration`, `DevBuy`, or `DevSell`.
+- `LimitOrder.trigger`: `Immediate`, `Migration`, `DevBuy { filter }`, or `DevSell { filter }`. MCP-friendly payloads also accept legacy string `DevBuy` / `DevSell` and treat them as `DevTriggerFilter::None`.
 - `LimitOrder.wallet`: wallet that executes the order.
 - `RawOrder.slippage`: optional decimal slippage percent; defaults to `SLIPPAGE_DEFAULT`.
 - `RawOrder.tip`: optional tip lamports; defaults by buy/sell side.

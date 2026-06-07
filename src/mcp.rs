@@ -1028,7 +1028,7 @@ fn raw_request_meta(name: &str) -> Value {
             "timedelta": "Use [seconds, nanoseconds], e.g. [30, 0].",
             "quote_lamports": "Use the Rust serde enum shape, e.g. {\"Buy\":{\"Lamports\":1000000}} for 0.001 SOL.",
             "ud128_percent": "Use ratios: \"1\" means 100%, \"0.5\" means 50%. Do not pass 100 for 100%.",
-            "defaults": "prepare_trade, prepare_place_limit_orders, and prepare_limit_order fill slippage, tip, fee, processors, durable nonce, slot latency, and price-impact defaults when omitted."
+            "defaults": "prepare_trade, prepare_place_limit_orders, and prepare_limit_order fill slippage, tip, fee, processors, durable nonce, slot latency, price-impact, and empty trade-filter defaults when omitted."
         },
         "examples": raw_request_examples(name)
     })

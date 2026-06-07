@@ -17,7 +17,7 @@ use aura_api_client::{
 use chrono::{DateTime, Utc};
 use decisol::Lamports;
 use fastnum::UD128;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -64,6 +64,7 @@ struct FriendlyMarketTrade {
     expire_at: Option<DateTime<Utc>>,
     rpc_nonce: Option<u64>,
     max_price_impact: Option<UD128>,
+    filters: Option<TradeFilters>,
     #[serde(default)]
     limit_orders: FriendlyApiOrders,
 }
@@ -88,6 +89,7 @@ impl TryFrom<FriendlyMarketTrade> for MarketTrade {
             rpc_nonce: value.rpc_nonce,
             max_price_impact: Some(value.max_price_impact.unwrap_or(MAX_PRICE_IMPACT_DEF)),
             limit_orders: value.limit_orders.try_into()?,
+            filters: value.filters.unwrap_or_default(),
         })
     }
 }
@@ -116,7 +118,7 @@ impl TryFrom<FriendlyApiOrders> for ApiOrders {
 struct FriendlyApiLimitOrder {
     state: OrderState,
     order: FriendlyRawOrder,
-    trigger: OrderEventTrigger,
+    trigger: FriendlyOrderEventTrigger,
     wallet: JsonAddress,
 }
 
@@ -127,10 +129,69 @@ impl TryFrom<FriendlyApiLimitOrder> for ApiLimitOrder {
         Ok(Self {
             state: value.state,
             order: value.order.into(),
-            trigger: value.trigger,
+            trigger: value.trigger.0,
             wallet: value.wallet.parse()?,
         })
     }
+}
+
+#[derive(Debug)]
+struct FriendlyOrderEventTrigger(OrderEventTrigger);
+
+impl<'de> Deserialize<'de> for FriendlyOrderEventTrigger {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let trigger = match value {
+            Value::String(name) => match name.as_str() {
+                "Immediate" => OrderEventTrigger::Immediate,
+                "Migration" => OrderEventTrigger::Migration,
+                "DevBuy" => OrderEventTrigger::DevBuy {
+                    filter: DevTriggerFilter::None,
+                },
+                "DevSell" => OrderEventTrigger::DevSell {
+                    filter: DevTriggerFilter::None,
+                },
+                _ => {
+                    return Err(serde::de::Error::custom(format!(
+                        "unknown OrderEventTrigger variant {name}"
+                    )));
+                }
+            },
+            value => serde_json::from_value(normalize_order_event_trigger(value))
+                .map_err(serde::de::Error::custom)?,
+        };
+        Ok(Self(trigger))
+    }
+}
+
+fn normalize_order_event_trigger(value: Value) -> Value {
+    let Value::Object(mut map) = value else {
+        return value;
+    };
+    if map.len() != 1 {
+        return Value::Object(map);
+    }
+
+    let key = if map.contains_key("DevBuy") {
+        "DevBuy"
+    } else if map.contains_key("DevSell") {
+        "DevSell"
+    } else {
+        return Value::Object(map);
+    };
+
+    let inner = map.remove(key).unwrap_or(Value::Null);
+    let wrapped = match inner {
+        Value::Object(ref object) if object.contains_key("filter") => inner,
+        other => json!({ "filter": other }),
+    };
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert(key.to_owned(), wrapped);
+    Value::Object(normalized)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1378,6 +1439,7 @@ mod tests {
             expire_at: None,
             rpc_nonce: None,
             max_price_impact: None,
+            filters: None,
             limit_orders: FriendlyApiOrders::default(),
         })
         .unwrap();
@@ -1387,6 +1449,8 @@ mod tests {
         assert_eq!(decoded.priority_fee, Lamports::new(BUY_FEE_LAMPORTS));
         assert_eq!(decoded.slot_latency, Some(MCP_DEFAULT_SLOT_LATENCY));
         assert_eq!(decoded.max_price_impact, Some(MAX_PRICE_IMPACT_DEF));
+        assert_eq!(decoded.filters.min_mcap, None);
+        assert_eq!(decoded.filters.max_mcap, None);
         assert!(decoded.procs.is_some());
         assert!(matches!(decoded.nonce, UserNonceStrategy::Durable));
         assert!(decoded.limit_orders.orders.is_empty());
@@ -1427,6 +1491,45 @@ mod tests {
         assert!(matches!(
             decoded.limit_orders.orders[0].order.amount,
             SwapAmount::SellPerc { .. }
+        ));
+    }
+
+    #[test]
+    fn friendly_limit_order_payload_accepts_dev_trigger_filter_defaults() {
+        let wallet = "AURAXd1nDoqtUDnjTFeedapcbSTid5XYhYpm2hhN6wd9";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let payload = json!({
+            "mint": mint,
+            "orders": {
+                "orders": [{
+                    "state": {
+                        "Api": {
+                            "id": null,
+                            "expire_dur": null,
+                            "activate_dur": [30, 0]
+                        }
+                    },
+                    "order": {
+                        "target": {"Market": {"mode": "Always"}},
+                        "amount": {"SellPerc": {"amount": "1"}}
+                    },
+                    "trigger": "DevBuy",
+                    "wallet": wallet
+                }]
+            }
+        });
+
+        let decoded = decode_friendly_request::<
+            FriendlyUpdateTokenLimitOrders,
+            UpdateTokenLimitOrders,
+        >(payload)
+        .unwrap();
+
+        assert!(matches!(
+            decoded.orders.orders[0].trigger,
+            OrderEventTrigger::DevBuy {
+                filter: DevTriggerFilter::None
+            }
         ));
     }
 

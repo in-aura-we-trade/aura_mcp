@@ -146,6 +146,7 @@ Parameter notes:
 - `expire_at`: optional UTC expiration.
 - `rpc_nonce`: optional caller nonce.
 - `max_price_impact`: optional decimal price-impact guard.
+- `filters`: optional trade filters such as min/max market cap.
 - `limit_orders`: optional auto limit orders attached to the trade.
 
 Percent values are ratios, not whole percentage numbers: `UD128::ZERO` is 0%, `UD128::ONE` is 100%, and `udec128!(0.5)` is 50%.
@@ -153,7 +154,7 @@ Percent values are ratios, not whole percentage numbers: `UD128::ZERO` is 0%, `U
 ```rust
 use aura_api_client::client::types::{
     ApiLimitOrder, ApiOrders, MarketExecuteMode, MarketTrade, OrderEventTrigger, OrderState,
-    RawOrder, SwapAmount, Target, TxnProcessors, UserNonceStrategy,
+    RawOrder, SwapAmount, Target, TradeFilters, TxnProcessors, UserNonceStrategy,
 };
 use chrono::TimeDelta;
 use decisol::{Lamports, QuoteLamports, Usdc, udec128};
@@ -205,6 +206,7 @@ let trade = MarketTrade {
     expire_at: None,
     rpc_nonce: None,
     max_price_impact: Some(udec128!(1.0)),
+    filters: TradeFilters::default(),
     limit_orders: ApiOrders {
         orders: vec![auto_limit],
     },

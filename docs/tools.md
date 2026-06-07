@@ -39,7 +39,7 @@ Every tool description includes the Aura rate limits. Every tool also includes `
 
 Every tool also includes `_meta.aura_batching_recommendations`. Agents should batch actions when possible: pass follow-up orders through `MarketTrade.limit_orders`, place multiple limit orders in one `UpdateTokenLimitOrders.orders` payload, send multiple `SnipeUpdate.updates` or `CtUpdate.updates` entries in one task edit, and update multiple pubkeys through one `ConfigPubkeys.pubkeys` list.
 
-For `prepare_trade`, `prepare_place_limit_orders`, and `prepare_limit_order`, agents can omit common execution settings. MCP fills friendly defaults from `aura_api_client`: slippage, buy/sell tip, buy/sell priority fee, `TxnProcessors::default()`, durable nonce, default price impact, and a 16-slot latency. Required intent fields such as mint, amount, target, and wallet still need to be supplied.
+For `prepare_trade`, `prepare_place_limit_orders`, and `prepare_limit_order`, agents can omit common execution settings. MCP fills friendly defaults from `aura_api_client`: slippage, buy/sell tip, buy/sell priority fee, `TxnProcessors::default()`, durable nonce, default price impact, empty trade filters, and a 16-slot latency. Required intent fields such as mint, amount, target, and wallet still need to be supplied.
 
 Percent `UD128` values are ratios: `0` is 0%, `"1"` / `UD128::ONE` is 100%, and `"0.5"` / `udec128!(0.5)` is 50%. Do not pass `100` for 100%.
 
